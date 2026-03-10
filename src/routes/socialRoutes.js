@@ -3,6 +3,7 @@ const {
   toggleFollow,
   getFollowStatus,
   getUserProfile,
+  getUserProfileByUsername,
   getFollowers,
   getFollowing,
   getMessageRequests,
@@ -21,6 +22,7 @@ router.post('/users/:userId/follow', authMiddleware, asyncHandler(toggleFollow))
 router.get('/users/:userId/follow-status', authMiddleware, asyncHandler(getFollowStatus))
 
 // User profile endpoints
+router.get('/users/:username/profile-by-username', authMiddleware, asyncHandler(getUserProfileByUsername))
 router.get('/users/:userId/profile', authMiddleware, asyncHandler(getUserProfile))
 router.get('/users/:userId/followers', authMiddleware, asyncHandler(getFollowers))
 router.get('/users/:userId/following', authMiddleware, asyncHandler(getFollowing))

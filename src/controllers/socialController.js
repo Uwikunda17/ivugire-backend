@@ -104,6 +104,41 @@ async function getUserProfile(req, res) {
   return res.json(profile)
 }
 
+// Get user profile by username
+async function getUserProfileByUsername(req, res) {
+  const { username } = req.params
+  const currentUserId = req.user?.id
+
+  const user = await pool.query(
+    `SELECT 
+      u.id, 
+      u.email, 
+      u.name, 
+      u.username, 
+      u.bio, 
+      u.location, 
+      u.website, 
+      u.avatar_url AS "avatarUrl",
+      u.created_at AS "createdAt",
+      (SELECT COUNT(*) FROM follows WHERE following_id = u.id)::INT AS "followerCount",
+      (SELECT COUNT(*) FROM follows WHERE follower_id = u.id)::INT AS "followingCount",
+      COALESCE(EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND following_id = u.id), false) AS "isFollowing",
+      COALESCE(EXISTS(SELECT 1 FROM follows WHERE follower_id = u.id AND following_id = $2), false) AS "isFollowedBy"
+    FROM users u
+    WHERE LOWER(u.username) = LOWER($1)`,
+    [username, currentUserId || ''],
+  )
+
+  if (user.rowCount === 0) {
+    return res.status(404).json({ error: 'user_not_found' })
+  }
+
+  const profile = user.rows[0]
+  profile.isMutualFollow = profile.isFollowing && profile.isFollowedBy
+
+  return res.json(profile)
+}
+
 // Get followers list
 async function getFollowers(req, res) {
   const { userId } = req.params
@@ -264,6 +299,7 @@ module.exports = {
   toggleFollow,
   getFollowStatus,
   getUserProfile,
+  getUserProfileByUsername,
   getFollowers,
   getFollowing,
   getMessageRequests,

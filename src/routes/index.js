@@ -6,6 +6,7 @@ const chatRoutes = require('./chatRoutes')
 const storyRoutes = require('./storyRoutes')
 const socialRoutes = require('./socialRoutes')
 const notificationRoutes = require('./notificationRoutes')
+const exploreRoutes = require('./exploreRoutes')
 
 const router = express.Router()
 
@@ -16,5 +17,6 @@ router.use(chatRoutes)
 router.use(storyRoutes)
 router.use(socialRoutes)
 router.use(notificationRoutes)
+router.use(exploreRoutes)
 
 module.exports = router

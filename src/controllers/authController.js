@@ -50,9 +50,10 @@ async function register(req, res) {
 }
 
 async function login(req, res) {
-  const { email, password } = req.body || {}
-  if (!email || !password) return res.status(400).json({ error: 'email_password_required' })
+  const { emailOrUsername, password } = req.body || {}
+  if (!emailOrUsername || !password) return res.status(400).json({ error: 'emailOrUsername_password_required' })
 
+  // Support both email and username login
   const result = await pool.query(
     `SELECT
       id,
@@ -66,8 +67,8 @@ async function login(req, res) {
       avatar_url AS "avatarUrl",
       created_at AS "createdAt"
      FROM users
-     WHERE email = $1`,
-    [email.toLowerCase()],
+     WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($1)`,
+    [emailOrUsername],
   )
   if (result.rowCount === 0) return res.status(400).json({ error: 'invalid_credentials' })
 
