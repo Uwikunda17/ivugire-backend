@@ -388,6 +388,26 @@ async function createDirectChat(req, res) {
   const recipient = userResult.rows[0]
   if (recipient.id === req.user.id) return res.status(400).json({ error: 'cannot_chat_with_self' })
 
+  // Check if users are mutually following each other
+  const mutualFollowResult = await pool.query(
+    `SELECT 
+      EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND following_id = $2) AS "isFollowing",
+      EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND following_id = $1) AS "isFollowedBy"`,
+    [req.user.id, recipient.id],
+  )
+
+  const { isFollowing, isFollowedBy } = mutualFollowResult.rows[0]
+  const isMutualFollow = isFollowing && isFollowedBy
+
+  if (!isMutualFollow) {
+    return res.status(403).json({
+      error: 'mutual_follow_required',
+      message: 'You can only chat with users you mutually follow',
+      isFollowing,
+      isFollowedBy,
+    })
+  }
+
   const existing = await pool.query(
     `SELECT c.id
      FROM chats c
@@ -406,16 +426,29 @@ async function createDirectChat(req, res) {
   try {
     await client.query('BEGIN')
     const chatId = randomUUID()
+    
+    // Create chat
     await client.query(
       `INSERT INTO chats (id, is_group, created_by, title)
        VALUES ($1, false, $2, null)`,
       [chatId, req.user.id],
     )
+    
+    // Add members
     await client.query(
       `INSERT INTO chat_members (chat_id, user_id)
        VALUES ($1, $2), ($1, $3)`,
       [chatId, req.user.id, recipient.id],
     )
+    
+    // Create message request
+    const requestId = randomUUID()
+    await client.query(
+      `INSERT INTO message_requests (id, chat_id, sender_id, recipient_id, status)
+       VALUES ($1, $2, $3, $4, 'accepted')`,
+      [requestId, chatId, req.user.id, recipient.id],
+    )
+    
     await client.query('COMMIT')
     return res.status(201).json({ chatId, created: true })
   } catch (error) {

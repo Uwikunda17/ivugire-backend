@@ -217,13 +217,39 @@ async function toggleLike(req, res) {
     [postId, req.user.id],
   )
 
-  if (existing.rowCount > 0) {
-    await pool.query('DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2', [postId, req.user.id])
-  } else {
-    await pool.query(
-      'INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT (post_id, user_id) DO NOTHING',
-      [postId, req.user.id],
-    )
+  // Get post owner
+  const postOwner = await pool.query('SELECT user_id FROM posts WHERE id = $1', [postId])
+  if (postOwner.rowCount > 0) {
+    const ownerId = postOwner.rows[0].user_id
+
+    if (existing.rowCount > 0) {
+      // Unlike
+      await pool.query('DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2', [postId, req.user.id])
+    } else {
+      // Like - create notification if it's not the post owner liking their own post
+      await pool.query(
+        'INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT (post_id, user_id) DO NOTHING',
+        [postId, req.user.id],
+      )
+
+      if (req.user.id !== ownerId) {
+        const { createNotification } = require('./notificationController')
+        await createNotification(ownerId, req.user.id, 'like', {
+          relatedPostId: postId,
+          text: `liked your post`,
+        })
+
+        // Emit real-time notification
+        const io = req.app.get('io')
+        if (io) {
+          io.to(`user:${ownerId}`).emit('notification', {
+            type: 'like',
+            actorId: req.user.id,
+            postId: postId,
+          })
+        }
+      }
+    }
   }
 
   const countResult = await pool.query(

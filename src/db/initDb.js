@@ -253,6 +253,92 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_story_tags_story_id ON story_tags(story_id)
     `)
 
+    // Follow system
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS follows (
+        follower_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        following_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (follower_id, following_id),
+        CHECK (follower_id <> following_id)
+      )
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_follows_follower_id ON follows(follower_id)
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_follows_following_id ON follows(following_id)
+    `)
+
+    // Message requests
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS message_requests (
+        id UUID PRIMARY KEY,
+        chat_id UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+        sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (chat_id)
+      )
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_message_requests_recipient_id_status ON message_requests(recipient_id, status)
+    `)
+
+    // Voice and video calls
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS calls (
+        id UUID PRIMARY KEY,
+        chat_id UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+        initiator_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        call_type TEXT NOT NULL CHECK (call_type IN ('audio', 'video')),
+        status TEXT NOT NULL DEFAULT 'ringing' CHECK (status IN ('ringing', 'accepted', 'declined', 'ended', 'missed')),
+        started_at TIMESTAMPTZ,
+        ended_at TIMESTAMPTZ,
+        duration_seconds INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_calls_chat_id_created_at ON calls(chat_id, created_at DESC)
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_calls_recipient_id_status ON calls(recipient_id, status)
+    `)
+
+    // Notifications
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        actor_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        notification_type TEXT NOT NULL CHECK (notification_type IN ('follow', 'like', 'comment', 'share', 'message', 'mention')),
+        related_post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
+        related_story_id UUID REFERENCES stories(id) ON DELETE CASCADE,
+        related_chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
+        text TEXT,
+        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_notifications_user_id_created_at ON notifications(user_id, created_at DESC)
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_notifications_user_id_is_read ON notifications(user_id, is_read)
+    `)
+
     await client.query('COMMIT')
   } catch (error) {
     await client.query('ROLLBACK')
