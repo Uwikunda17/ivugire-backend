@@ -339,6 +339,25 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_notifications_user_id_is_read ON notifications(user_id, is_read)
     `)
 
+    // Multi-media support for posts
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS post_media_items (
+        id UUID PRIMARY KEY,
+        post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+        media_url TEXT NOT NULL,
+        media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video', 'audio')),
+        media_duration_seconds INTEGER,
+        trim_end_seconds INTEGER,
+        is_trimmed BOOLEAN NOT NULL DEFAULT FALSE,
+        sequence_order INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_post_media_items_post_id ON post_media_items(post_id, sequence_order)
+    `)
+
     await client.query('COMMIT')
   } catch (error) {
     await client.query('ROLLBACK')

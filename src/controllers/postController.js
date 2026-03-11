@@ -63,9 +63,21 @@ function feedQuery(extraWhere = '') {
         SELECT 1
         FROM post_likes pl
         WHERE pl.post_id = p.id AND pl.user_id = $1
-      ) AS "likedByMe"
+      ) AS "likedByMe",
+      COALESCE(json_agg(
+        json_build_object(
+          'id', pmi.id,
+          'mediaUrl', pmi.media_url,
+          'mediaType', pmi.media_type,
+          'mediaDurationSeconds', pmi.media_duration_seconds,
+          'trimEndSeconds', pmi.trim_end_seconds,
+          'isTrimmed', pmi.is_trimmed,
+          'sequenceOrder', pmi.sequence_order
+        ) ORDER BY pmi.sequence_order
+      ) FILTER (WHERE pmi.id IS NOT NULL), '[]') AS "mediaItems"
     FROM posts p
     INNER JOIN users u ON u.id = p.user_id
+    LEFT JOIN post_media_items pmi ON pmi.post_id = p.id
     LEFT JOIN (
       SELECT post_id, COUNT(*)::INT AS count
       FROM post_likes
@@ -87,6 +99,7 @@ function feedQuery(extraWhere = '') {
       GROUP BY post_id
     ) view_counts ON view_counts.post_id = p.id
     ${extraWhere}
+    GROUP BY p.id, u.id, like_counts.count, comment_counts.count, share_counts.count, view_counts.count
   `
 }
 
@@ -138,66 +151,145 @@ async function listMyPosts(req, res) {
 }
 
 async function createPost(req, res) {
-  const { caption = '', postKind = 'post', mediaDurationSeconds } = req.body || {}
-  const file = req.file
+  const { caption = '', postKind = 'post' } = req.body || {}
+  const files = req.files || []
 
-  if (!file) return res.status(400).json({ error: 'media_file_required' })
+  if (!files || files.length === 0) return res.status(400).json({ error: 'media_file_required' })
 
-  const mediaType = getMediaType(file.mimetype) || getMediaTypeFromFilename(file.originalname || file.filename)
-  if (!mediaType) return res.status(400).json({ error: 'unsupported_media_type' })
+  // Validate file counts
+  const photoCount = files.filter((f) => {
+    const mediaType = getMediaType(f.mimetype) || getMediaTypeFromFilename(f.originalname || f.filename)
+    return mediaType === 'image'
+  }).length
+  const videoCount = files.filter((f) => {
+    const mediaType = getMediaType(f.mimetype) || getMediaTypeFromFilename(f.originalname || f.filename)
+    return mediaType === 'video'
+  }).length
 
-  if (postKind === 'reel' && mediaType !== 'video') {
+  if (photoCount > 10) return res.status(400).json({ error: 'max_photos_exceeded', max: 10 })
+  if (videoCount > 3) return res.status(400).json({ error: 'max_videos_exceeded', max: 3 })
+
+  // Validate media types
+  let hasVideo = false
+  let hasNonVideo = false
+  
+  for (const file of files) {
+    const mediaType = getMediaType(file.mimetype) || getMediaTypeFromFilename(file.originalname || file.filename)
+    if (!mediaType) return res.status(400).json({ error: 'unsupported_media_type' })
+    if (mediaType === 'video' || mediaType === 'audio') hasVideo = true
+    else hasNonVideo = true
+  }
+
+  if (postKind === 'reel' && hasNonVideo) {
     return res.status(400).json({ error: 'reels_require_video' })
   }
 
-  const duration = Number(mediaDurationSeconds || 0)
-  const hasDuration = Number.isFinite(duration) && duration > 0
+  const postId = randomUUID()
   const maxReelSeconds = 300
-  const shouldTrim = mediaType === 'video' && hasDuration && duration > maxReelSeconds
-  let storedFilename = file.filename
+  let isTrimmed = false
 
-  if (shouldTrim) {
-    const trimmedFilename = await trimVideoFileIfPossible(file.path, maxReelSeconds)
-    if (trimmedFilename) storedFilename = trimmedFilename
-  }
-
-  const result = await pool.query(
-    `INSERT INTO posts (
-      id,
-      user_id,
-      post_kind,
-      caption,
-      media_url,
-      media_type,
-      media_duration_seconds,
-      trim_end_seconds,
-      is_trimmed
+  // Extract duration data from request body
+  const durationData = req.body || {}
+  
+  try {
+    // Insert post first
+    await pool.query(
+      `INSERT INTO posts (
+        id,
+        user_id,
+        post_kind,
+        caption,
+        media_url,
+        media_type,
+        media_duration_seconds,
+        trim_end_seconds,
+        is_trimmed
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        postId,
+        req.user.id,
+        postKind === 'reel' ? 'reel' : 'post',
+        caption,
+        `/uploads/${files[0].filename}`, // Primary media for backwards compatibility
+        getMediaType(files[0].mimetype) || getMediaTypeFromFilename(files[0].originalname || files[0].filename),
+        null,
+        null,
+        false,
+      ],
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    RETURNING
-      id,
-      caption,
-      media_url AS "mediaUrl",
-      media_type AS "mediaType",
-      media_duration_seconds AS "mediaDurationSeconds",
-      trim_end_seconds AS "trimEndSeconds",
-      is_trimmed AS "isTrimmed",
-      post_kind AS "postKind",
-      created_at AS "createdAt"`,
-    [
-      randomUUID(),
-      req.user.id,
-      postKind === 'reel' ? 'reel' : 'post',
-      caption,
-      `/uploads/${storedFilename}`,
-      mediaType,
-      hasDuration ? Math.round(duration) : null,
-      shouldTrim ? maxReelSeconds : null,
-      shouldTrim,
-    ],
-  )
 
-  return res.status(201).json(result.rows[0])
+    // Insert each media item
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const mediaType = getMediaType(file.mimetype) || getMediaTypeFromFilename(file.originalname || file.filename)
+      const durationKey = `mediaDurationSeconds`
+      const duration = Number(durationData[durationKey] || 0)
+      const hasDuration = Number.isFinite(duration) && duration > 0
+      const shouldTrim = mediaType === 'video' && hasDuration && duration > maxReelSeconds
+
+      let storedFilename = file.filename
+
+      if (shouldTrim) {
+        const trimmedFilename = await trimVideoFileIfPossible(file.path, maxReelSeconds)
+        if (trimmedFilename) {
+          storedFilename = trimmedFilename
+          isTrimmed = true
+        }
+      }
+
+      await pool.query(
+        `INSERT INTO post_media_items (
+          id,
+          post_id,
+          media_url,
+          media_type,
+          media_duration_seconds,
+          trim_end_seconds,
+          is_trimmed,
+          sequence_order
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          randomUUID(),
+          postId,
+          `/uploads/${storedFilename}`,
+          mediaType,
+          hasDuration ? Math.round(duration) : null,
+          shouldTrim ? maxReelSeconds : null,
+          shouldTrim,
+          i + 1,
+        ],
+      )
+    }
+
+    const result = await pool.query(
+      `SELECT
+        id,
+        caption,
+        media_url AS "mediaUrl",
+        media_type AS "mediaType",
+        media_duration_seconds AS "mediaDurationSeconds",
+        trim_end_seconds AS "trimEndSeconds",
+        is_trimmed AS "isTrimmed",
+        post_kind AS "postKind",
+        created_at AS "createdAt"
+      FROM posts WHERE id = $1`,
+      [postId],
+    )
+
+    return res.status(201).json({ ...result.rows[0], mediaCount: files.length, isTrimmed })
+  } catch (error) {
+    // Clean up uploads if insertion fails
+    for (const file of files) {
+      try {
+        await fs.unlink(file.path)
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+    }
+    throw error
+  }
 }
 
 async function deletePost(req, res) {
